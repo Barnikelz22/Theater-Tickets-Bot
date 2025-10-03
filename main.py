@@ -760,7 +760,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Replace with your bot token
-    BOT_TOKEN = os.environ.get(BOT_TOKEN_ENV_VAR)
+    bot_token = os.environ.get(BOT_TOKEN_ENV_VAR)
+    if not bot_token:
+        print(f"Error: Please set the {BOT_TOKEN_ENV_VAR} environment variable.")
+        exit(1)
 
-    bot = TheaterBot(BOT_TOKEN, debug=args.debug)
+    bot = TheaterBot(bot_token, debug=args.debug)
     bot.run()

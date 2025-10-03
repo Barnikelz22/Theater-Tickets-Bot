@@ -22,7 +22,6 @@ FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"
 LOG_FILE = 'telegram_bot.log'
 DEFAULT_MIN_SEATS = 2
 MONITORING_INTERVAL = 30  # 30 seconds
-MAX_GROUPS_TO_NOTIFY = 3
 
 
 # Data classes
@@ -603,7 +602,7 @@ class TheaterBot:
                     if new_groups:
                         message = f"🎉 New available seats found for show {theater_id}!\n\n"
                         # Show all new groups
-                        for i, group in enumerate(new_groups[:MAX_GROUPS_TO_NOTIFY], 1):
+                        for i, group in enumerate(new_groups, 1):
                             message += f"{i}. {group['count']} adjacent seats: Row {group['row']}, Chair {group['start_chair']} - {group['end_chair']}\n"
 
                         # Also include total available groups

@@ -17,10 +17,11 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 # Constants
 BOT_TOKEN_ENV_VAR = 'BOT_TOKEN'
 DB_FILE = 'theater_bot_db.toml'
-FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap  "
+FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"
 LOG_FILE = 'telegram_bot.log'
 DEFAULT_MIN_SEATS = 2
-MONITORING_INTERVAL = 30  # 30 seconds for testing, change back to 300 (5 min) for production
+# 30 seconds for testing, change back to 300 (5 min) for production
+MONITORING_INTERVAL = 30
 
 
 # Data classes
@@ -51,7 +52,7 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-MAIN_LOGGER = logging.getLogger('theater_bot')
+main_logger = logging.getLogger('theater_bot')
 
 
 class TheaterBot:
@@ -67,7 +68,7 @@ class TheaterBot:
 
         # Set logging level based on debug flag
         if debug:
-            MAIN_LOGGER.setLevel(logging.DEBUG)
+            main_logger.setLevel(logging.DEBUG)
             logging.getLogger("httpx").setLevel(logging.DEBUG)
             logging.getLogger("telegram").setLevel(logging.DEBUG)
             logging.getLogger("aiohttp").setLevel(logging.DEBUG)
@@ -90,16 +91,17 @@ class TheaterBot:
                         created_at=value['created_at'],
                         last_available_groups=value.get(
                             'last_available_groups', []),
-                        max_row=value.get('max_row')  # Load max_row if it exists
+                        # Load max_row if it exists
+                        max_row=value.get('max_row')
                     )
                 return shows
         except FileNotFoundError:
             return {}
         except Exception as e:
-            MAIN_LOGGER.error(f"Error loading database: {e}")
+            main_logger.error(f"Error loading database: {e}")
             # If the file is corrupted, delete it and create a new one
             if os.path.exists(self.db_file):
-                MAIN_LOGGER.info(
+                main_logger.info(
                     "Database file is corrupted, deleting and creating a new one...")
                 os.remove(self.db_file)
             return {}
@@ -121,7 +123,7 @@ class TheaterBot:
             with open(self.db_file, 'w', encoding='utf-8') as f:
                 toml.dump(data, f)
         except Exception as e:
-            MAIN_LOGGER.error(f"Error saving database: {e}")
+            main_logger.error(f"Error saving database: {e}")
 
     async def fetch_and_parse_chairmap(self, theater_id: str):
         """Fetch and parse the chairmap for a given theater ID."""
@@ -139,16 +141,16 @@ class TheaterBot:
 
                     # Log available seats if debug is enabled
                     if self.debug:
-                        MAIN_LOGGER.debug(
+                        main_logger.debug(
                             f"Fetched {len(seats)} total seats, {len(available_seats)} available for theater {theater_id}")
                         for seat in available_seats:
-                            MAIN_LOGGER.debug(
+                            main_logger.debug(
                                 f"Available seat: Row {seat.row}, Chair {seat.chair}")
 
                     return available_seats
 
         except aiohttp.ClientError as e:
-            MAIN_LOGGER.error(f"An error occurred during the request: {e}")
+            main_logger.error(f"An error occurred during the request: {e}")
             return []
 
     def parse_seats_from_html(self, html_content: str) -> List[Seat]:
@@ -193,7 +195,7 @@ class TheaterBot:
                 seats = [s for s in seats if int(s.row) <= max_row]
             except ValueError:
                 # If row is not numeric, we can't compare, so skip filtering
-                MAIN_LOGGER.warning(f"Row value is not numeric: {s.row}")
+                main_logger.warning(f"Row value is not numeric: {s.row}")
 
         # Group seats by row
         seats_by_row: Dict[str, List[Seat]] = {}
@@ -348,7 +350,7 @@ class TheaterBot:
                 message += f"  Min seats: {show.min_seats}\n"
                 message += f"  {row_info}\n"
                 message += f"  Last checked: {len(show.last_available_groups)} groups found\n\n"
-                
+
                 # Add inline button for each show to manage it
                 keyboard.append([InlineKeyboardButton(
                     f"Manage: {show.theater_id}",
@@ -427,7 +429,7 @@ class TheaterBot:
                     message += f"  Min seats: {show.min_seats}\n"
                     message += f"  {row_info}\n"
                     message += f"  Last checked: {len(show.last_available_groups)} groups found\n\n"
-                    
+
                     # Add inline button for each show to manage it
                     keyboard.append([InlineKeyboardButton(
                         f"Manage: {show.theater_id}",
@@ -504,7 +506,7 @@ class TheaterBot:
             if key and key in self.monitored_shows:
                 self.monitored_shows[key].max_row = max_row
                 self.save_db()
-                
+
                 status = f"unlimited" if max_row is None else str(max_row)
                 await update.message.reply_text(
                     f"✅ Successfully updated max row to {status} for show {self.monitored_shows[key].theater_id}.",
@@ -515,7 +517,7 @@ class TheaterBot:
                     "❌ Error updating max row. Please try again.",
                     reply_markup=self.get_main_menu_keyboard()
                 )
-                
+
             context.user_data.pop('waiting_for_max_row', None)
             context.user_data.pop('waiting_for_max_row_key', None)
             return
@@ -634,6 +636,7 @@ class TheaterBot:
                 "Please enter a valid number (0 for unlimited).",
                 reply_markup=self.get_main_menu_keyboard()
             )
+            # Don't clear the state so user can try again
             return
 
         max_row = int(text)
@@ -706,11 +709,11 @@ class TheaterBot:
     def _compare_groups(self, old_groups: List[Dict], new_groups: List[Dict]) -> List[Dict]:
         """
         Compare old and new seat groups to find new additions and changes.
-        
+
         Args:
             old_groups: List of previous seat groups
             new_groups: List of current seat groups
-            
+
         Returns:
             List of groups that are new or have changed
         """
@@ -719,19 +722,19 @@ class TheaterBot:
         for group in old_groups:
             key = (group['row'], group['start_chair'], group['end_chair'])
             old_group_keys.add(key)
-        
+
         # Find new groups that weren't in the old list
         new_added = []
         for group in new_groups:
             key = (group['row'], group['start_chair'], group['end_chair'])
             if key not in old_group_keys:
                 new_added.append(group)
-        
+
         return new_added
 
     async def monitor_show(self, theater_id: str, min_seats: int, chat_id: int, key: str):
         """Monitor a show and notify when seats are available"""
-        MAIN_LOGGER.info(
+        main_logger.info(
             f"Started monitoring show {theater_id} for {min_seats} seats for user {chat_id}")
 
         try:
@@ -746,7 +749,8 @@ class TheaterBot:
 
                     # Check for changes since last check using the new comparison method
                     old_groups = self.monitored_shows[key].last_available_groups
-                    new_groups = self._compare_groups(old_groups, adjacent_groups)
+                    new_groups = self._compare_groups(
+                        old_groups, adjacent_groups)
 
                     if new_groups:
                         message = f"🎉 New available seats found for show {theater_id}!\n\n"
@@ -763,10 +767,10 @@ class TheaterBot:
                                 chat_id=chat_id,
                                 text=message
                             )
-                            MAIN_LOGGER.info(
+                            main_logger.info(
                                 f"Notification sent to chat {chat_id} for show {theater_id}")
                         except Exception as e:
-                            MAIN_LOGGER.error(
+                            main_logger.error(
                                 f"Error sending message to chat {chat_id}: {e}")
 
                     # Update the stored groups
@@ -776,10 +780,10 @@ class TheaterBot:
                 # Wait before next check
                 await asyncio.sleep(MONITORING_INTERVAL)
         except asyncio.CancelledError:
-            MAIN_LOGGER.info(
+            main_logger.info(
                 f"Monitoring task for show {theater_id} was cancelled")
         except Exception as e:
-            MAIN_LOGGER.error(
+            main_logger.error(
                 f"Error in monitoring loop for show {theater_id}: {e}")
 
     async def handle_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
@@ -860,19 +864,23 @@ class TheaterBot:
                 await query.edit_message_text("❌ The show is no longer being monitored.")
 
         elif query.data.startswith('manage_'):
-            key = query.data.split('_', 1)[1]  # Get the full key after 'manage_'
-            
+            # Get the full key after 'manage_'
+            key = query.data.split('_', 1)[1]
+
             if key in self.monitored_shows:
                 show = self.monitored_shows[key]
                 message = f"Manage Show: {show.theater_id}\n\n"
                 message += f"Min seats: {show.min_seats}\n"
                 message += f"Max row: {show.max_row if show.max_row is not None else 'Unlimited'}\n"
                 message += f"Last checked: {len(show.last_available_groups)} groups found\n\n"
-                
+
                 keyboard = [
-                    [InlineKeyboardButton("Change Max Row", callback_data=f'change_max_row_{key}')],
-                    [InlineKeyboardButton("Stop Monitoring", callback_data=f'stop_{key}')],
-                    [InlineKeyboardButton("Back to Menu", callback_data='main_menu')]
+                    [InlineKeyboardButton(
+                        "Change Max Row", callback_data=f'change_max_row_{key}')],
+                    [InlineKeyboardButton(
+                        "Stop Monitoring", callback_data=f'stop_{key}')],
+                    [InlineKeyboardButton(
+                        "Back to Menu", callback_data='main_menu')]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(message, reply_markup=reply_markup)
@@ -880,8 +888,9 @@ class TheaterBot:
                 await query.edit_message_text("❌ Show not found.")
 
         elif query.data.startswith('change_max_row_'):
-            key = query.data.split('_', 2)[2]  # Get the full key after 'change_max_row_'
-            
+            # Get the full key after 'change_max_row_'
+            key = query.data.split('_', 2)[2]
+
             if key in self.monitored_shows:
                 await query.edit_message_text(
                     "What is the new maximum row number you want to consider? (Enter a number, or 0 for unlimited)"
@@ -919,7 +928,7 @@ class TheaterBot:
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, self.handle_message))
 
-        MAIN_LOGGER.info("Bot started successfully!")
+        main_logger.info("Bot started successfully!")
         application.run_polling()
 
 
@@ -932,7 +941,8 @@ if __name__ == "__main__":
     # Replace with your bot token
     bot_token = os.environ.get(BOT_TOKEN_ENV_VAR)
     if not bot_token:
-        print(f"Error: Please set the {BOT_TOKEN_ENV_VAR} environment variable.")
+        print(
+            f"Error: Please set the {BOT_TOKEN_ENV_VAR} environment variable.")
         exit(1)
 
     bot = TheaterBot(bot_token, debug=args.debug)

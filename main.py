@@ -820,6 +820,7 @@ class TheaterBot:
             new_exists = new_key in self.monitored_shows
             main_logger.info(f"[DEBUG] old_key exists in monitored_shows: {old_exists}")
             main_logger.info(f"[DEBUG] new_key exists in monitored_shows: {new_exists}")
+            main_logger.info(f"[DEBUG] monitored_shows: {self.monitored_shows}")
             # Use the NEW key for the lookup
             key = new_key
             # --- DEBUG PRINTS END ---

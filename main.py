@@ -631,6 +631,7 @@ class TheaterBot:
             "What is the maximum row number you want to consider? (Enter a number, or 0 for unlimited)",
             reply_markup=self.get_main_menu_keyboard()
         )
+        context.user_data['waiting_for_min_seats'] = False
         context.user_data['waiting_for_max_row_setup'] = True
         context.user_data['temp_min_seats'] = min_seats
         context.user_data['temp_theater_id'] = theater_id

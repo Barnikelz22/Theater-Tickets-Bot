@@ -803,29 +803,7 @@ class TheaterBot:
             else:
                 await query.edit_message_text("❌ Show not found.")
         elif query.data.startswith('change_max_row_'):
-            # --- DEBUG PRINTS START ---
-            main_logger.info(f"[DEBUG] Received callback_data: {query.data}")
-            # Get the full key after 'change_max_row_'
-            # OLD (buggy) logic: key = query.data.split('_')[-1]
-            # NEW (correct) logic: key = query.data.split('_', 1)[1]
-            # Let's test both and see what they produce:
-            split_all = query.data.split('_')
-            split_three = query.data.split('_', 3)
-            main_logger.info(f"[DEBUG] query.data.split('_'): {split_all}")
-            main_logger.info(f"[DEBUG] query.data.split('_', 3): {split_three}")
-            old_key = split_all[-1] # What the old code used
-            new_key = split_three[-1] # What the new code should use
-            main_logger.info(f"[DEBUG] Old key (split_all[-1]): '{old_key}'")
-            main_logger.info(f"[DEBUG] New key (split_three[-1]): '{new_key}'")
-            # Check which one exists in monitored_shows
-            old_exists = old_key in self.monitored_shows
-            new_exists = new_key in self.monitored_shows
-            main_logger.info(f"[DEBUG] old_key exists in monitored_shows: {old_exists}")
-            main_logger.info(f"[DEBUG] new_key exists in monitored_shows: {new_exists}")
-            main_logger.info(f"[DEBUG] monitored_shows: {self.monitored_shows}")
-            # Use the NEW key for the lookup
-            key = new_key
-            # --- DEBUG PRINTS END ---
+            key = query.data.split('_', 3)[1]
             if key in self.monitored_shows:
                 await query.edit_message_text(
                     "What is the new maximum row number you want to consider? (Enter a number, or 0 for unlimited)"

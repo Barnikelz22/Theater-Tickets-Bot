@@ -1,5 +1,5 @@
 {
     "deploy": {
-        "startCommand": "python main.py --debug"
+        "startCommand": "python main.py"
     }
 }

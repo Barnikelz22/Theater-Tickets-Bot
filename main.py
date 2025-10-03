@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+import json
 
 import aiohttp
 import toml
@@ -14,6 +15,16 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
 
+# Constants
+BOT_TOKEN_ENV_VAR = 'BOT_TOKEN'
+DB_FILE = 'theater_bot_db.toml'
+FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"
+LOG_FILE = 'telegram_bot.log'
+DEFAULT_MIN_SEATS = 2
+MONITORING_INTERVAL = 300  # 5 minutes in seconds
+MAX_GROUPS_TO_NOTIFY = 3
+
+
 # Data classes
 @dataclass
 class Seat:
@@ -21,35 +32,43 @@ class Seat:
     chair: str
     status: str
 
+
 @dataclass
 class MonitoredShow:
     chat_id: int
     theater_id: str
     min_seats: int
     created_at: str
+    # Store each group as {row, start_chair, end_chair, count}
+    last_available_groups: List[Dict]
+
 
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('telegram_bot.log', encoding='utf-8'),
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
-main_logger = logging.getLogger('theater_bot')
+MAIN_LOGGER = logging.getLogger('theater_bot')
+
 
 class TheaterBot:
+    """Main class for the Theater Seat Finder Bot."""
+
     def __init__(self, token: str, debug: bool = False):
+        """Initialize the bot with the provided token."""
         self.token = token
-        self.db_file = 'theater_bot_db.toml'
+        self.db_file = DB_FILE
         self.monitored_shows = self.load_db()
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
         self.debug = debug
-        
+
         # Set logging level based on debug flag
         if debug:
-            main_logger.setLevel(logging.DEBUG)
+            MAIN_LOGGER.setLevel(logging.DEBUG)
             logging.getLogger("httpx").setLevel(logging.DEBUG)
             logging.getLogger("telegram").setLevel(logging.DEBUG)
             logging.getLogger("aiohttp").setLevel(logging.DEBUG)
@@ -69,16 +88,19 @@ class TheaterBot:
                         chat_id=value['chat_id'],
                         theater_id=value['theater_id'],
                         min_seats=value['min_seats'],
-                        created_at=value['created_at']
+                        created_at=value['created_at'],
+                        last_available_groups=value.get(
+                            'last_available_groups', [])
                     )
                 return shows
         except FileNotFoundError:
             return {}
         except Exception as e:
-            main_logger.error(f"Error loading database: {e}")
+            MAIN_LOGGER.error(f"Error loading database: {e}")
             # If the file is corrupted, delete it and create a new one
             if os.path.exists(self.db_file):
-                main_logger.info("Database file is corrupted, deleting and creating a new one...")
+                MAIN_LOGGER.info(
+                    "Database file is corrupted, deleting and creating a new one...")
                 os.remove(self.db_file)
             return {}
 
@@ -91,21 +113,22 @@ class TheaterBot:
                     'chat_id': show.chat_id,
                     'theater_id': show.theater_id,
                     'min_seats': show.min_seats,
-                    'created_at': show.created_at
+                    'created_at': show.created_at,
+                    'last_available_groups': show.last_available_groups
                 }
 
             with open(self.db_file, 'w', encoding='utf-8') as f:
                 toml.dump(data, f)
         except Exception as e:
-            main_logger.error(f"Error saving database: {e}")
+            MAIN_LOGGER.error(f"Error saving database: {e}")
 
     async def fetch_and_parse_chairmap(self, theater_id: str):
-        url = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"
+        """Fetch and parse the chairmap for a given theater ID."""
         payload = {"show_theater": theater_id}
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=payload) as response:
+                async with session.post(FETCH_URL, data=payload) as response:
                     response.raise_for_status()
                     html_content = await response.text()
                     seats = self.parse_seats_from_html(html_content)
@@ -115,17 +138,20 @@ class TheaterBot:
 
                     # Log available seats if debug is enabled
                     if self.debug:
-                        main_logger.debug(f"Fetched {len(seats)} total seats, {len(available_seats)} available for theater {theater_id}")
+                        MAIN_LOGGER.debug(
+                            f"Fetched {len(seats)} total seats, {len(available_seats)} available for theater {theater_id}")
                         for seat in available_seats:
-                            main_logger.debug(f"Available seat: Row {seat.row}, Chair {seat.chair}")
+                            MAIN_LOGGER.debug(
+                                f"Available seat: Row {seat.row}, Chair {seat.chair}")
 
                     return available_seats
 
         except aiohttp.ClientError as e:
-            main_logger.error(f"An error occurred during the request: {e}")
+            MAIN_LOGGER.error(f"An error occurred during the request: {e}")
             return []
 
     def parse_seats_from_html(self, html_content: str) -> List[Seat]:
+        """Parse seats from HTML content."""
         seats = []
 
         # Pattern to match <a> tags with data-chair, data-row, and class attributes
@@ -148,7 +174,7 @@ class TheaterBot:
 
         return seats
 
-    def find_adjacent_seats(self, seats: List[Seat], min_seats: int = 2) -> List[List[Seat]]:
+    def find_adjacent_seats(self, seats: List[Seat], min_seats: int = DEFAULT_MIN_SEATS) -> List[Dict]:
         """
         Find groups of adjacent available seats.
 
@@ -157,7 +183,7 @@ class TheaterBot:
             min_seats: Minimum number of adjacent seats required in a group
 
         Returns:
-            List of lists, where each inner list contains adjacent seats
+            List of dictionaries, where each dict contains row, start_chair, end_chair, and count
         """
         # Group seats by row
         seats_by_row: Dict[str, List[Seat]] = {}
@@ -199,12 +225,22 @@ class TheaterBot:
                 else:
                     # End of current sequence
                     if len(current_sequence) >= min_seats:
-                        adjacent_groups.append(current_sequence)
+                        adjacent_groups.append({
+                            'row': row,
+                            'start_chair': current_sequence[0].chair,
+                            'end_chair': current_sequence[-1].chair,
+                            'count': len(current_sequence)
+                        })
                     current_sequence = [current_seat]
 
             # Don't forget the last sequence
             if len(current_sequence) >= min_seats:
-                adjacent_groups.append(current_sequence)
+                adjacent_groups.append({
+                    'row': row,
+                    'start_chair': current_sequence[0].chair,
+                    'end_chair': current_sequence[-1].chair,
+                    'count': len(current_sequence)
+                })
 
         return adjacent_groups
 
@@ -297,7 +333,8 @@ class TheaterBot:
             message = "📋 Your monitored shows:\n\n"
             for key, show in user_shows.items():
                 message += f"• Show ID: {show.theater_id}\n"
-                message += f"  Min seats: {show.min_seats}\n\n"
+                message += f"  Min seats: {show.min_seats}\n"
+                message += f"  Last checked: {len(show.last_available_groups)} groups found\n\n"
 
         await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
 
@@ -317,11 +354,12 @@ class TheaterBot:
                 keyboard.append([InlineKeyboardButton(
                     f"Show ID: {show.theater_id} (Min: {show.min_seats})",
                     callback_data=f'stop_{key}')])
-            
+
             # Add back button
-            keyboard.append([InlineKeyboardButton("Back to Menu", callback_data='main_menu')])
+            keyboard.append([InlineKeyboardButton(
+                "Back to Menu", callback_data='main_menu')])
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
+
             await update.message.reply_text(message, reply_markup=reply_markup)
             return
 
@@ -357,7 +395,8 @@ class TheaterBot:
                 message = "📋 Your monitored shows:\n\n"
                 for key, show in user_shows.items():
                     message += f"• Show ID: {show.theater_id}\n"
-                    message += f"  Min seats: {show.min_seats}\n\n"
+                    message += f"  Min seats: {show.min_seats}\n"
+                    message += f"  Last checked: {len(show.last_available_groups)} groups found\n\n"
 
             await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
             return
@@ -374,11 +413,12 @@ class TheaterBot:
                     keyboard.append([InlineKeyboardButton(
                         f"Show ID: {show.theater_id} (Min: {show.min_seats})",
                         callback_data=f'stop_{key}')])
-                
+
                 # Add back button
-                keyboard.append([InlineKeyboardButton("Back to Menu", callback_data='main_menu')])
+                keyboard.append([InlineKeyboardButton(
+                    "Back to Menu", callback_data='main_menu')])
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                
+
                 await update.message.reply_text(message, reply_markup=reply_markup)
                 return
 
@@ -445,12 +485,12 @@ class TheaterBot:
 
         # Find adjacent seats with default min of 2
         adjacent_groups = self.find_adjacent_seats(
-            available_seats, min_seats=2)
+            available_seats, min_seats=DEFAULT_MIN_SEATS)
 
         if adjacent_groups:
             message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n\n"
             for i, group in enumerate(adjacent_groups, 1):
-                message += f"{i}. {len(group)} adjacent seats at row {group[0].row}: Seat numbers {group[0].chair} - {group[-1].chair}\n"
+                message += f"{i}. {group['count']} adjacent seats at row {group['row']}: Seat numbers {group['start_chair']} - {group['end_chair']}\n"
         else:
             message = "No adjacent seats found that meet your criteria."
 
@@ -505,7 +545,8 @@ class TheaterBot:
             chat_id=chat_id,
             theater_id=theater_id,
             min_seats=min_seats,
-            created_at=datetime.now().isoformat()
+            created_at=datetime.now().isoformat(),
+            last_available_groups=[]
         )
         self.save_db()
 
@@ -543,7 +584,7 @@ class TheaterBot:
 
     async def monitor_show(self, theater_id: str, min_seats: int, chat_id: int, key: str):
         """Monitor a show and notify when seats are available"""
-        main_logger.info(
+        MAIN_LOGGER.info(
             f"Started monitoring show {theater_id} for {min_seats} seats for user {chat_id}")
 
         try:
@@ -554,11 +595,19 @@ class TheaterBot:
                     adjacent_groups = self.find_adjacent_seats(
                         available_seats, min_seats=min_seats)
 
-                    if adjacent_groups:
-                        message = f"🎉 Available seats found for show {theater_id}!\n\n"
-                        # Show first 3 groups
-                        for i, group in enumerate(adjacent_groups[:3], 1):
-                            message += f"{i}. {len(group)} adjacent seats: Row {group[0].row}, Chair {group[0].chair} - {group[-1].chair}\n"
+                    # Check for changes since last check
+                    old_groups = self.monitored_shows[key].last_available_groups
+                    new_groups = [
+                        g for g in adjacent_groups if g not in old_groups]
+
+                    if new_groups:
+                        message = f"🎉 New available seats found for show {theater_id}!\n\n"
+                        # Show all new groups
+                        for i, group in enumerate(new_groups[:MAX_GROUPS_TO_NOTIFY], 1):
+                            message += f"{i}. {group['count']} adjacent seats: Row {group['row']}, Chair {group['start_chair']} - {group['end_chair']}\n"
+
+                        # Also include total available groups
+                        message += f"\nTotal available groups: {len(adjacent_groups)}"
 
                         # Send notification to user
                         try:
@@ -566,19 +615,23 @@ class TheaterBot:
                                 chat_id=chat_id,
                                 text=message
                             )
-                            main_logger.info(
+                            MAIN_LOGGER.info(
                                 f"Notification sent to chat {chat_id} for show {theater_id}")
                         except Exception as e:
-                            main_logger.error(
+                            MAIN_LOGGER.error(
                                 f"Error sending message to chat {chat_id}: {e}")
 
+                    # Update the stored groups
+                    self.monitored_shows[key].last_available_groups = adjacent_groups
+                    self.save_db()
+
                 # Wait 5 minutes before next check
-                await asyncio.sleep(300)
+                await asyncio.sleep(MONITORING_INTERVAL)
         except asyncio.CancelledError:
-            main_logger.info(
+            MAIN_LOGGER.info(
                 f"Monitoring task for show {theater_id} was cancelled")
         except Exception as e:
-            main_logger.error(
+            MAIN_LOGGER.error(
                 f"Error in monitoring loop for show {theater_id}: {e}")
 
     async def handle_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
@@ -622,12 +675,12 @@ class TheaterBot:
 
             # Find adjacent seats with default min of 2
             adjacent_groups = self.find_adjacent_seats(
-                available_seats, min_seats=2)
+                available_seats, min_seats=DEFAULT_MIN_SEATS)
 
             if adjacent_groups:
                 message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n\n"
-                for i, group in enumerate(adjacent_groups, 1):  # Show all groups
-                    message += f"{i}. {len(group)} adjacent seats: Row {group[0].row}, Chair {group[0].chair} - {group[-1].chair}\n"
+                for i, group in enumerate(adjacent_groups, 1):  # Show ALL groups
+                    message += f"{i}. {group['count']} adjacent seats: Row {group['row']}, Chair {group['start_chair']} - {group['end_chair']}\n"
             else:
                 message = "No adjacent seats found that meet your criteria."
 
@@ -644,16 +697,16 @@ class TheaterBot:
 
         elif query.data.startswith('stop_'):
             key = query.data.split('_', 1)[1]  # Get the full key after 'stop_'
-            
+
             # Remove from monitored shows
             if key in self.monitored_shows:
                 theater_id = self.monitored_shows[key].theater_id
                 del self.monitored_shows[key]
                 self.save_db()
-                
+
                 # Stop the monitoring task
                 self.stop_monitoring_task(key)
-                
+
                 await query.edit_message_text(f"✅ Successfully stopped monitoring show {theater_id}")
             else:
                 await query.edit_message_text("❌ The show is no longer being monitored.")
@@ -697,17 +750,18 @@ class TheaterBot:
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, self.handle_message))
 
-        main_logger.info("Bot started successfully!")
+        MAIN_LOGGER.info("Bot started successfully!")
         application.run_polling()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Theater Seat Finder Bot')
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug logging')
     args = parser.parse_args()
 
     # Replace with your bot token
-    BOT_TOKEN = os.environ.get('BOT_TOKEN')
+    BOT_TOKEN = os.environ.get(BOT_TOKEN_ENV_VAR)
 
     bot = TheaterBot(BOT_TOKEN, debug=args.debug)
     bot.run()

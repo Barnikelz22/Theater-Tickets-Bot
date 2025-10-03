@@ -896,7 +896,7 @@ class TheaterBot:
 
         elif query.data.startswith('change_max_row_'):
             # Get the full key after 'change_max_row_'
-            key = query.data.split('_', 2)[2]
+            key = query.data.split('_')[-1]
 
             if key in self.monitored_shows:
                 await query.edit_message_text(

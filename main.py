@@ -802,7 +802,7 @@ class TheaterBot:
             else:
                 await query.edit_message_text("❌ Show not found.")
         elif query.data.startswith('change_max_row_'):
-            key = query.data.split('_', 3)[1]
+            key = query.data.split('_', 3)[-1]
             if key in self.monitored_shows:
                 await query.edit_message_text(
                     "What is the new maximum row number you want to consider? (Enter a number, or 0 for unlimited)"

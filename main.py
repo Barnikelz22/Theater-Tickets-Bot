@@ -79,7 +79,6 @@ class TheaterBot:
         self.monitored_shows = self.load_db()
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
         self.debug = debug
-        self.application = None # Will be set in run()
         # Set logging level based on debug flag
         if debug:
             main_logger.setLevel(logging.DEBUG)
@@ -753,8 +752,6 @@ class TheaterBot:
                 message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n"
                 for i, group in enumerate(adjacent_groups, 1):  # Show ALL groups
                     message += f"{i}. {group['count']} adjacent seats: Row {group['row']}, Chair {group['start_chair']} - {group['end_chair']}\n"
-                # Add URL to the notification message
-                message += f"\n🔗 Book now: {url}" # Note: `url` is not available here. You need to store it.
             else:
                 message = "No adjacent seats found that meet your criteria."
             keyboard = [[InlineKeyboardButton(
@@ -804,10 +801,28 @@ class TheaterBot:
             else:
                 await query.edit_message_text("❌ Show not found.")
         elif query.data.startswith('change_max_row_'):
+            # --- DEBUG PRINTS START ---
+            main_logger.info(f"[DEBUG] Received callback_data: {query.data}")
             # Get the full key after 'change_max_row_'
-            # Split only on the first underscore to separate the command from the key
-            # This correctly extracts the full key (e.g., "123456789_98765") even if the key contains underscores
-            key = query.data.split('_', 1)[1]
+            # OLD (buggy) logic: key = query.data.split('_')[-1]
+            # NEW (correct) logic: key = query.data.split('_', 1)[1]
+            # Let's test both and see what they produce:
+            split_all = query.data.split('_')
+            split_one = query.data.split('_', 1)
+            main_logger.info(f"[DEBUG] query.data.split('_'): {split_all}")
+            main_logger.info(f"[DEBUG] query.data.split('_', 1): {split_one}")
+            old_key = split_all[-1] # What the old code used
+            new_key = split_one[1] # What the new code should use
+            main_logger.info(f"[DEBUG] Old key (split_all[-1]): '{old_key}'")
+            main_logger.info(f"[DEBUG] New key (split_one[1]): '{new_key}'")
+            # Check which one exists in monitored_shows
+            old_exists = old_key in self.monitored_shows
+            new_exists = new_key in self.monitored_shows
+            main_logger.info(f"[DEBUG] old_key exists in monitored_shows: {old_exists}")
+            main_logger.info(f"[DEBUG] new_key exists in monitored_shows: {new_exists}")
+            # Use the NEW key for the lookup
+            key = new_key
+            # --- DEBUG PRINTS END ---
             if key in self.monitored_shows:
                 await query.edit_message_text(
                     "What is the new maximum row number you want to consider? (Enter a number, or 0 for unlimited)"

@@ -90,6 +90,7 @@ class TheaterBot:
             # logging.getLogger("telegram").setLevel(logging.WARNING)
             # logging.getLogger("aiohttp").setLevel(logging.WARNING)
             ...
+            
     def load_db(self) -> Dict[str, MonitoredShow]:
         """Load monitored shows from TOML database"""
         try:
@@ -809,13 +810,13 @@ class TheaterBot:
             # NEW (correct) logic: key = query.data.split('_', 1)[1]
             # Let's test both and see what they produce:
             split_all = query.data.split('_')
-            split_one = query.data.split('_', 1)
+            split_three = query.data.split('_', 3)
             main_logger.info(f"[DEBUG] query.data.split('_'): {split_all}")
-            main_logger.info(f"[DEBUG] query.data.split('_', 1): {split_one}")
+            main_logger.info(f"[DEBUG] query.data.split('_', 3): {split_three}")
             old_key = split_all[-1] # What the old code used
-            new_key = split_one[1] # What the new code should use
+            new_key = split_three[-1] # What the new code should use
             main_logger.info(f"[DEBUG] Old key (split_all[-1]): '{old_key}'")
-            main_logger.info(f"[DEBUG] New key (split_one[1]): '{new_key}'")
+            main_logger.info(f"[DEBUG] New key (split_three[-1]): '{new_key}'")
             # Check which one exists in monitored_shows
             old_exists = old_key in self.monitored_shows
             new_exists = new_key in self.monitored_shows

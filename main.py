@@ -18,7 +18,13 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 BOT_TOKEN_ENV_VAR = 'BOT_TOKEN'
 DB_FILE = 'theater_bot_db.toml'
 FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"
-LOG_FILE = 'telegram_bot.log'
+
+if os.environ.get('IS_PRODUCTION') == 'TRUE':
+    LOG_FILE = '/data/telegram_bot.log'
+else:
+    LOG_FILE = 'telegram_bot.log'
+
+
 DEFAULT_MIN_SEATS = 2
 # 30 seconds for testing, change back to 300 (5 min) for production
 MONITORING_INTERVAL = 30

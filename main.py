@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import aiohttp
 import toml
@@ -17,26 +17,46 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 # Constants
 BOT_TOKEN_ENV_VAR = 'BOT_TOKEN'
 DB_FILE = 'theater_bot_db.toml'
-FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"
-
+# Corrected URL
+FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"  # Removed trailing space
 if os.environ.get('IS_PRODUCTION') == 'TRUE':
     LOG_FILE = '/data/telegram_bot.log'
 else:
     LOG_FILE = 'telegram_bot.log'
-
-
 DEFAULT_MIN_SEATS = 2
 # 30 seconds for testing, change back to 300 (5 min) for production
 MONITORING_INTERVAL = 30
 
+# --- NEW: State Dataclasses ---
+@dataclass
+class InitialState:
+    """Default state when no specific action is pending."""
+    pass
 
-# Data classes
+@dataclass
+class FindSeatsState:
+    """State when waiting for a URL to find seats."""
+    pass
+
+@dataclass
+class MonitorSetupState:
+    """State during the monitoring setup process."""
+    temp_theater_id: Optional[str] = None
+    waiting_for: Optional[str] = None # 'min_seats' or 'max_row_setup'
+    temp_min_seats: Optional[int] = None
+
+@dataclass
+class ChangeMaxRowState:
+    """State when waiting for max row input for an existing monitored show."""
+    key: str
+# --- END NEW: State Dataclasses ---
+
+# Data classes (existing)
 @dataclass
 class Seat:
     row: str
     chair: str
     status: str
-
 
 @dataclass
 class MonitoredShow:
@@ -48,8 +68,7 @@ class MonitoredShow:
     last_available_groups: List[Dict]
     max_row: Optional[int] = None  # Maximum row number to consider
 
-
-# Setup logging
+# Setup logging (existing)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -60,10 +79,8 @@ logging.basicConfig(
 )
 main_logger = logging.getLogger('theater_bot')
 
-
 class TheaterBot:
     """Main class for the Theater Seat Finder Bot."""
-
     def __init__(self, token: str, debug: bool = False):
         """Initialize the bot with the provided token."""
         self.token = token
@@ -71,7 +88,6 @@ class TheaterBot:
         self.monitored_shows = self.load_db()
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
         self.debug = debug
-
         # Set logging level based on debug flag
         if debug:
             main_logger.setLevel(logging.DEBUG)
@@ -125,7 +141,6 @@ class TheaterBot:
                     'last_available_groups': show.last_available_groups,
                     'max_row': show.max_row  # Save max_row
                 }
-
             with open(self.db_file, 'w', encoding='utf-8') as f:
                 toml.dump(data, f)
         except Exception as e:
@@ -134,17 +149,14 @@ class TheaterBot:
     async def fetch_and_parse_chairmap(self, theater_id: str):
         """Fetch and parse the chairmap for a given theater ID."""
         payload = {"show_theater": theater_id}
-
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(FETCH_URL, data=payload) as response:
                     response.raise_for_status()
                     html_content = await response.text()
                     seats = self.parse_seats_from_html(html_content)
-
                     available_seats = [
                         s for s in seats if s.status == "available"]
-
                     # Log available seats if debug is enabled
                     if self.debug:
                         main_logger.debug(
@@ -152,9 +164,7 @@ class TheaterBot:
                         for seat in available_seats:
                             main_logger.debug(
                                 f"Available seat: Row {seat.row}, Chair {seat.chair}")
-
                     return available_seats
-
         except aiohttp.ClientError as e:
             main_logger.error(f"An error occurred during the request: {e}")
             return []
@@ -162,36 +172,29 @@ class TheaterBot:
     def parse_seats_from_html(self, html_content: str) -> List[Seat]:
         """Parse seats from HTML content."""
         seats = []
-
         # Pattern to match <a> tags with data-chair, data-row, and class attributes
         # The class contains either "taken" or other values indicating status
         pattern = r'<a.*?class="(.*?)".*?data-chair="(.*?)".*?data-row="(.*?)".*?</a>'
-
         matches = re.findall(pattern, html_content,
                              flags=re.MULTILINE | re.DOTALL)
-
         for class_attr, chair_num, row_num in matches:
             # Determine status from class - look for "taken" in the class string
             status = 'taken' if 'taken' in class_attr else "available"
-
             seat = Seat(
                 row=row_num,
                 chair=chair_num,
                 status=status
             )
             seats.append(seat)
-
         return seats
 
     def find_adjacent_seats(self, seats: List[Seat], min_seats: int = DEFAULT_MIN_SEATS, max_row: Optional[int] = None) -> List[Dict]:
         """
         Find groups of adjacent available seats.
-
         Args:
             seats: List of available seats
             min_seats: Minimum number of adjacent seats required in a group
             max_row: Maximum row number to consider (optional)
-
         Returns:
             List of dictionaries, where each dict contains row, start_chair, end_chair, and count
         """
@@ -216,19 +219,15 @@ class TheaterBot:
                 s.chair) if s.chair.isdigit() else s.chair)
 
         adjacent_groups = []
-
         # Process each row separately
         for row, row_seats in seats_by_row.items():
             if len(row_seats) < min_seats:
                 continue
-
             # Find consecutive sequences
             current_sequence = [row_seats[0]]
-
             for i in range(1, len(row_seats)):
                 current_seat = row_seats[i]
                 previous_seat = current_sequence[-1]
-
                 # Check if chairs are consecutive
                 try:
                     current_chair = int(current_seat.chair)
@@ -289,8 +288,8 @@ class TheaterBot:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start command handler"""
         welcome_message = (
-            "🎭 Welcome to Theater Seat Finder Bot!\n\n"
-            "I'll help you find available seats for shows.\n\n"
+            "🎭 Welcome to Theater Seat Finder Bot!\n"
+            "I'll help you find available seats for shows.\n"
             "Use the buttons below or commands:\n"
             "/find - Find available seats\n"
             "/monitor - Monitor a show\n"
@@ -298,28 +297,28 @@ class TheaterBot:
             "/stop - Stop monitoring shows\n"
             "/help - Show help information"
         )
-
         await update.message.reply_text(
             welcome_message,
             reply_markup=self.get_main_menu_keyboard()
         )
+        # Set initial state explicitly (though it's the default)
+        context.user_data['state'] = InitialState()
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         help_text = (
-            "❓ Theater Seat Finder Bot Help\n\n"
+            "❓ Theater Seat Finder Bot Help\n"
             "1. Send me a show URL to find seats\n"
             "2. Select from the results to monitor\n"
-            "3. I'll notify you when seats become available\n\n"
+            "3. I'll notify you when seats become available\n"
             "Available commands:\n"
             "/find - Find available seats\n"
             "/monitor - Monitor a show\n"
             "/myshows - View your monitored shows\n"
             "/stop - Stop monitoring shows\n"
-            "/help - Show this help\n\n"
+            "/help - Show this help\n"
             "Use the buttons at the bottom of your screen for quick access!"
         )
-
         await update.message.reply_text(help_text, reply_markup=self.get_main_menu_keyboard())
 
     async def find_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -328,7 +327,8 @@ class TheaterBot:
             "Please send me the show URL",
             reply_markup=self.get_main_menu_keyboard()
         )
-        context.user_data['action'] = 'find_seats'
+        # Store the new state object
+        context.user_data['state'] = FindSeatsState()
 
     async def monitor_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /monitor command"""
@@ -336,68 +336,59 @@ class TheaterBot:
             "Please send me the show URL to monitor",
             reply_markup=self.get_main_menu_keyboard()
         )
-        context.user_data['action'] = 'monitor'
+        # Store the new state object, initially waiting for the URL
+        # We'll update the state object after the URL is received
+        context.user_data['state'] = FindSeatsState() # Reuse for initial URL input, or create a MonitorWaitURL state
 
     async def myshows_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /myshows command"""
         chat_id = update.effective_message.chat_id
-
         user_shows = {k: v for k, v in self.monitored_shows.items()
                       if v.chat_id == chat_id}
-
         if not user_shows:
-            message = "You are not monitoring any shows.\n\nUse the '➕ Monitor Show' button to start monitoring!"
+            message = "You are not monitoring any shows.\nUse the '➕ Monitor Show' button to start monitoring!"
         else:
-            message = "📋 Your monitored shows:\n\n"
+            message = "📋 Your monitored shows:\n"
             keyboard = []
             for key, show in user_shows.items():
                 row_info = f"Max row: {show.max_row if show.max_row is not None else 'Unlimited'}"
                 message += f"• Show ID: {show.theater_id}\n"
                 message += f"  Min seats: {show.min_seats}\n"
                 message += f"  {row_info}\n"
-                message += f"  Last checked: {len(show.last_available_groups)} groups found\n\n"
-
+                message += f"  Last checked: {len(show.last_available_groups)} groups found\n"
                 # Add inline button for each show to manage it
                 keyboard.append([InlineKeyboardButton(
                     f"Manage: {show.theater_id}",
                     callback_data=f'manage_{key}')])
-
             # Add back button if there are shows
             if keyboard:
                 keyboard.append([InlineKeyboardButton(
                     "Back to Menu", callback_data='main_menu')])
             reply_markup = InlineKeyboardMarkup(keyboard)
-
             await update.message.reply_text(message, reply_markup=reply_markup)
             return
-
         await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
 
     async def stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stop command"""
         chat_id = update.effective_message.chat_id
-
         user_shows = {k: v for k, v in self.monitored_shows.items()
                       if v.chat_id == chat_id}
-
         if not user_shows:
             message = "You are not monitoring any shows."
         else:
-            message = "Select a show to stop monitoring:\n\n"
+            message = "Select a show to stop monitoring:\n"
             keyboard = []
             for key, show in user_shows.items():
                 keyboard.append([InlineKeyboardButton(
                     f"Stop: {show.theater_id} (Min: {show.min_seats})",
                     callback_data=f'stop_{key}')])
-
             # Add back button
             keyboard.append([InlineKeyboardButton(
                 "Back to Menu", callback_data='main_menu')])
             reply_markup = InlineKeyboardMarkup(keyboard)
-
             await update.message.reply_text(message, reply_markup=reply_markup)
             return
-
         await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -411,108 +402,100 @@ class TheaterBot:
                 "Please send me the show URL",
                 reply_markup=self.get_main_menu_keyboard()
             )
-            context.user_data['action'] = 'find_seats'
+            # Store the new state object
+            context.user_data['state'] = FindSeatsState()
             return
         elif text == "➕ Monitor Show":
             await update.message.reply_text(
                 "Please send me the show URL to monitor",
                 reply_markup=self.get_main_menu_keyboard()
             )
-            context.user_data['action'] = 'monitor'
+            # Store the state object for initial URL input for monitoring
+            context.user_data['state'] = FindSeatsState() # Could also be MonitorWaitURLState
             return
         elif text == "📋 My Monitored Shows":
             user_shows = {
                 k: v for k, v in self.monitored_shows.items() if v.chat_id == chat_id}
-
             if not user_shows:
-                message = "You are not monitoring any shows.\n\nUse the '➕ Monitor Show' button to start monitoring!"
+                message = "You are not monitoring any shows.\nUse the '➕ Monitor Show' button to start monitoring!"
             else:
-                message = "📋 Your monitored shows:\n\n"
+                message = "📋 Your monitored shows:\n"
                 keyboard = []
                 for key, show in user_shows.items():
                     row_info = f"Max row: {show.max_row if show.max_row is not None else 'Unlimited'}"
                     message += f"• Show ID: {show.theater_id}\n"
                     message += f"  Min seats: {show.min_seats}\n"
                     message += f"  {row_info}\n"
-                    message += f"  Last checked: {len(show.last_available_groups)} groups found\n\n"
-
+                    message += f"  Last checked: {len(show.last_available_groups)} groups found\n"
                     # Add inline button for each show to manage it
                     keyboard.append([InlineKeyboardButton(
                         f"Manage: {show.theater_id}",
                         callback_data=f'manage_{key}')])
-
                 # Add back button if there are shows
                 if keyboard:
                     keyboard.append([InlineKeyboardButton(
                         "Back to Menu", callback_data='main_menu')])
                 reply_markup = InlineKeyboardMarkup(keyboard)
-
                 await update.message.reply_text(message, reply_markup=reply_markup)
                 return
-
             await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
             return
         elif text == "❌ Stop Monitoring":
             user_shows = {
                 k: v for k, v in self.monitored_shows.items() if v.chat_id == chat_id}
-
             if not user_shows:
                 message = "You are not monitoring any shows."
             else:
-                message = "Select a show to stop monitoring:\n\n"
+                message = "Select a show to stop monitoring:\n"
                 keyboard = []
                 for key, show in user_shows.items():
                     keyboard.append([InlineKeyboardButton(
                         f"Stop: {show.theater_id} (Min: {show.min_seats})",
                         callback_data=f'stop_{key}')])
-
                 # Add back button
                 keyboard.append([InlineKeyboardButton(
                     "Back to Menu", callback_data='main_menu')])
                 reply_markup = InlineKeyboardMarkup(keyboard)
-
                 await update.message.reply_text(message, reply_markup=reply_markup)
                 return
-
             await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
             return
         elif text == "❓ Help":
             help_text = (
-                "❓ Theater Seat Finder Bot Help\n\n"
+                "❓ Theater Seat Finder Bot Help\n"
                 "1. Send me a show URL to find seats\n"
                 "2. Select from the results to monitor\n"
-                "3. I'll notify you when seats become available\n\n"
+                "3. I'll notify you when seats become available\n"
                 "Available commands:\n"
                 "/find - Find available seats\n"
                 "/monitor - Monitor a show\n"
                 "/myshows - View your monitored shows\n"
                 "/stop - Stop monitoring shows\n"
-                "/help - Show this help\n\n"
+                "/help - Show this help\n"
                 "Use the buttons at the bottom of your screen for quick access!"
             )
-
             await update.message.reply_text(help_text, reply_markup=self.get_main_menu_keyboard())
             return
 
-        # Handle max row setting for specific show
-        if context.user_data.get('waiting_for_max_row'):
+        # --- NEW: Handle states based on the object type ---
+        current_state = context.user_data.get('state')
+
+        # Handle max row setting for specific show (ChangeMaxRowState)
+        if isinstance(current_state, ChangeMaxRowState):
             if not text.isdigit():
                 await update.message.reply_text(
                     "Please enter a valid number (0 for unlimited).",
                     reply_markup=self.get_main_menu_keyboard()
                 )
                 return
-
             max_row = int(text)
             if max_row == 0:
                 max_row = None  # 0 means unlimited
 
-            # Update specific show
-            key = context.user_data.get('waiting_for_max_row_key')
+            key = current_state.key
             if key and key in self.monitored_shows:
                 self.monitored_shows[key].max_row = max_row
                 self.save_db()
-
                 status = f"unlimited" if max_row is None else str(max_row)
                 await update.message.reply_text(
                     f"✅ Successfully updated max row to {status} for show {self.monitored_shows[key].theater_id}.",
@@ -523,36 +506,35 @@ class TheaterBot:
                     "❌ Error updating max row. Please try again.",
                     reply_markup=self.get_main_menu_keyboard()
                 )
-
-            context.user_data.pop('waiting_for_max_row', None)
-            context.user_data.pop('waiting_for_max_row_key', None)
+            # Clear the state after handling
+            context.user_data.pop('state', None)
             return
 
-        # Check if we're waiting for min seats input
-        if context.user_data.get('waiting_for_min_seats'):
-            await self.handle_min_seats_input(update, context, text)
+        # Handle monitoring setup steps (MonitorSetupState)
+        if isinstance(current_state, MonitorSetupState):
+            if current_state.waiting_for == 'min_seats':
+                await self.handle_min_seats_input(update, context, text, current_state.temp_theater_id)
+                return
+            elif current_state.waiting_for == 'max_row_setup':
+                await self.handle_max_row_input(update, context, text, current_state.temp_theater_id, current_state.temp_min_seats)
+                return
+
+        # Handle finding seats (FindSeatsState)
+        if isinstance(current_state, FindSeatsState):
+            await self.find_seats_for_url(update, context, text)
+            # Clear the state after handling the URL
+            context.user_data.pop('state', None)
             return
 
-        # Check if we're waiting for max row input during monitoring setup
-        if context.user_data.get('waiting_for_max_row_setup'):
-            await self.handle_max_row_input(update, context, text)
-            return
-
-        # Check if we're waiting for a URL
-        if action := context.user_data.get('action'):
-            if action == 'find_seats':
-                await self.find_seats_for_url(update, context, text)
-                context.user_data.pop('action', None)
-            elif action == 'monitor':
-                await self.start_monitoring(update, context, text)
-                context.user_data.pop('action', None)
+        # Default state handling: check if it's a URL
+        if text.startswith('http'):
+            await self.handle_url(update, context, text)
         else:
-            # Check if it's a URL
-            if text.startswith('http'):
-                await self.handle_url(update, context, text)
-            else:
-                await update.message.reply_text("Please send a valid show URL or use the menu buttons.",
-                                                reply_markup=self.get_main_menu_keyboard())
+            await update.message.reply_text("Please send a valid show URL or use the menu buttons.",
+                                            reply_markup=self.get_main_menu_keyboard())
+            # Ensure state is InitialState if no specific action is pending
+            if not isinstance(current_state, InitialState):
+                 context.user_data['state'] = InitialState()
 
     async def find_seats_for_url(self, update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
         """Find seats for a given URL"""
@@ -565,9 +547,7 @@ class TheaterBot:
             return
 
         await update.message.reply_text("Searching for available seats...")
-
         available_seats = await self.fetch_and_parse_chairmap(theater_id)
-
         if not available_seats:
             await update.message.reply_text("No available seats found or error occurred.",
                                             reply_markup=self.get_main_menu_keyboard())
@@ -576,9 +556,8 @@ class TheaterBot:
         # Find adjacent seats with default min of 2 (no max row filter for immediate search)
         adjacent_groups = self.find_adjacent_seats(
             available_seats, min_seats=DEFAULT_MIN_SEATS, max_row=None)
-
         if adjacent_groups:
-            message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n\n"
+            message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n"
             for i, group in enumerate(adjacent_groups, 1):
                 message += f"{i}. {group['count']} adjacent seats at row {group['row']}: Seat numbers {group['start_chair']} - {group['end_chair']}\n"
         else:
@@ -587,7 +566,7 @@ class TheaterBot:
         await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
 
     async def start_monitoring(self, update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
-        """Start monitoring a show for available seats"""
+        """Start monitoring a show for available seats - Called from URL handler or command"""
         theater_id = self.extract_theater_id(url)
         if not theater_id:
             await update.message.reply_text(
@@ -601,20 +580,20 @@ class TheaterBot:
             "How many adjacent seats do you need? (Enter a number)",
             reply_markup=self.get_main_menu_keyboard()
         )
-        context.user_data['waiting_for_min_seats'] = True
-        context.user_data['temp_theater_id'] = theater_id
+        # Store the new state object for monitoring setup, waiting for min_seats
+        context.user_data['state'] = MonitorSetupState(temp_theater_id=theater_id, waiting_for='min_seats')
 
-    async def handle_min_seats_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    async def handle_min_seats_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, theater_id: str):
         """Handle min seats input during monitoring setup"""
         if not text.isdigit():
             await update.message.reply_text(
                 "Please enter a valid number.",
                 reply_markup=self.get_main_menu_keyboard()
             )
+            # Don't clear the state so user can try again
             return
 
         min_seats = int(text)
-        theater_id = context.user_data.get('temp_theater_id')
         chat_id = update.effective_message.chat_id
 
         if not theater_id:
@@ -622,8 +601,8 @@ class TheaterBot:
                 "Something went wrong. Please try again.",
                 reply_markup=self.get_main_menu_keyboard()
             )
-            context.user_data.pop('waiting_for_min_seats', None)
-            context.user_data.pop('temp_theater_id', None)
+            # Clear state if error occurs
+            context.user_data.pop('state', None)
             return
 
         # Ask for max row after getting min seats
@@ -631,12 +610,10 @@ class TheaterBot:
             "What is the maximum row number you want to consider? (Enter a number, or 0 for unlimited)",
             reply_markup=self.get_main_menu_keyboard()
         )
-        context.user_data['waiting_for_min_seats'] = False
-        context.user_data['waiting_for_max_row_setup'] = True
-        context.user_data['temp_min_seats'] = min_seats
-        context.user_data['temp_theater_id'] = theater_id
+        # Update the state object to wait for max_row
+        context.user_data['state'] = MonitorSetupState(temp_theater_id=theater_id, waiting_for='max_row_setup', temp_min_seats=min_seats)
 
-    async def handle_max_row_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    async def handle_max_row_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, theater_id: str, min_seats: int):
         """Handle max row input during monitoring setup"""
         if not text.isdigit():
             await update.message.reply_text(
@@ -650,8 +627,6 @@ class TheaterBot:
         if max_row == 0:
             max_row = None  # 0 means unlimited
 
-        theater_id = context.user_data.get('temp_theater_id')
-        min_seats = context.user_data.get('temp_min_seats')
         chat_id = update.effective_message.chat_id
 
         if not theater_id or min_seats is None:
@@ -659,9 +634,7 @@ class TheaterBot:
                 "Something went wrong. Please try again.",
                 reply_markup=self.get_main_menu_keyboard()
             )
-            context.user_data.pop('waiting_for_max_row_setup', None)
-            context.user_data.pop('temp_theater_id', None)
-            context.user_data.pop('temp_min_seats', None)
+            context.user_data.pop('state', None)
             return
 
         # Create a unique key for this monitoring
@@ -684,22 +657,18 @@ class TheaterBot:
 
         await update.message.reply_text(
             f"✅ Successfully started monitoring show {theater_id} for {min_seats} adjacent seats!\n"
-            f"Maximum row: {max_row if max_row is not None else 'Unlimited'}\n\n"
+            f"Maximum row: {max_row if max_row is not None else 'Unlimited'}\n"
             "I'll notify you when available seats are found.",
             reply_markup=self.get_main_menu_keyboard()
         )
-
-        # Clear the waiting state
-        context.user_data.pop('waiting_for_max_row_setup', None)
-        context.user_data.pop('temp_theater_id', None)
-        context.user_data.pop('temp_min_seats', None)
+        # Clear the state after successful setup
+        context.user_data.pop('state', None)
 
     async def start_monitoring_task(self, key: str, theater_id: str, min_seats: int, chat_id: int):
         """Start a monitoring task for a specific show"""
         if key in self.monitoring_tasks:
             # Cancel existing task if any
             self.monitoring_tasks[key].cancel()
-
         # Create and store the monitoring task
         task = asyncio.create_task(
             self.monitor_show(theater_id, min_seats, chat_id, key)
@@ -716,11 +685,9 @@ class TheaterBot:
     def _compare_groups(self, old_groups: List[Dict], new_groups: List[Dict]) -> List[Dict]:
         """
         Compare old and new seat groups to find new additions and changes.
-
         Args:
             old_groups: List of previous seat groups
             new_groups: List of current seat groups
-
         Returns:
             List of groups that are new or have changed
         """
@@ -743,11 +710,9 @@ class TheaterBot:
         """Monitor a show and notify when seats are available"""
         main_logger.info(
             f"Started monitoring show {theater_id} for {min_seats} seats for user {chat_id}")
-
         try:
             while key in self.monitored_shows and self.monitored_shows[key].chat_id == chat_id:
                 available_seats = await self.fetch_and_parse_chairmap(theater_id)
-
                 if available_seats:
                     # Use the max_row setting from the monitored show
                     max_row = self.monitored_shows[key].max_row
@@ -760,11 +725,10 @@ class TheaterBot:
                         old_groups, adjacent_groups)
 
                     if new_groups:
-                        message = f"🎉 New available seats found for show {theater_id}!\n\n"
+                        message = f"🎉 New available seats found for show {theater_id}!\n"
                         # Show all new groups
                         for i, group in enumerate(new_groups, 1):
                             message += f"{i}. {group['count']} adjacent seats: Row {group['row']}, Chair {group['start_chair']} - {group['end_chair']}\n"
-
                         # Also include total available groups
                         message += f"\nTotal available groups: {len(adjacent_groups)}"
 
@@ -811,7 +775,6 @@ class TheaterBot:
             [InlineKeyboardButton("Back to Menu", callback_data='main_menu')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
         await update.message.reply_text(
             f"Found show ID: {theater_id}\nWhat would you like to do?",
             reply_markup=reply_markup
@@ -825,9 +788,7 @@ class TheaterBot:
         if query.data.startswith('find_now_'):
             theater_id = query.data.split('_')[2]
             await query.edit_message_text("Searching for available seats...")
-
             available_seats = await self.fetch_and_parse_chairmap(theater_id)
-
             if not available_seats:
                 await query.edit_message_text("No available seats found or error occurred.")
                 return
@@ -835,9 +796,8 @@ class TheaterBot:
             # Find adjacent seats with default min of 2 (no max row filter for immediate search)
             adjacent_groups = self.find_adjacent_seats(
                 available_seats, min_seats=DEFAULT_MIN_SEATS, max_row=None)
-
             if adjacent_groups:
-                message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n\n"
+                message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n"
                 for i, group in enumerate(adjacent_groups, 1):  # Show ALL groups
                     message += f"{i}. {group['count']} adjacent seats: Row {group['row']}, Chair {group['start_chair']} - {group['end_chair']}\n"
             else:
@@ -850,22 +810,22 @@ class TheaterBot:
 
         elif query.data.startswith('monitor_'):
             theater_id = query.data.split('_')[1]
+            # Call start_monitoring to handle the initial steps
+            # We need to simulate the message flow. We'll call start_monitoring with a mock update or just trigger the state change here.
+            # For simplicity, let's trigger the state change directly here.
             await query.edit_message_text("How many adjacent seats do you need? (Enter a number)")
-            context.user_data['waiting_for_min_seats'] = True
-            context.user_data['temp_theater_id'] = theater_id
+            # Store the new state object for monitoring setup, waiting for min_seats
+            context.user_data['state'] = MonitorSetupState(temp_theater_id=theater_id, waiting_for='min_seats')
 
         elif query.data.startswith('stop_'):
             key = query.data.split('_', 1)[1]  # Get the full key after 'stop_'
-
             # Remove from monitored shows
             if key in self.monitored_shows:
                 theater_id = self.monitored_shows[key].theater_id
                 del self.monitored_shows[key]
                 self.save_db()
-
                 # Stop the monitoring task
                 await self.stop_monitoring_task(key)
-
                 await query.edit_message_text(f"✅ Successfully stopped monitoring show {theater_id}")
             else:
                 await query.edit_message_text("❌ The show is no longer being monitored.")
@@ -873,13 +833,12 @@ class TheaterBot:
         elif query.data.startswith('manage_'):
             # Get the full key after 'manage_'
             key = query.data.split('_', 1)[1]
-
             if key in self.monitored_shows:
                 show = self.monitored_shows[key]
-                message = f"Manage Show: {show.theater_id}\n\n"
+                message = f"Manage Show: {show.theater_id}\n"
                 message += f"Min seats: {show.min_seats}\n"
                 message += f"Max row: {show.max_row if show.max_row is not None else 'Unlimited'}\n"
-                message += f"Last checked: {len(show.last_available_groups)} groups found\n\n"
+                message += f"Last checked: {len(show.last_available_groups)} groups found\n"
 
                 keyboard = [
                     [InlineKeyboardButton(
@@ -897,27 +856,27 @@ class TheaterBot:
         elif query.data.startswith('change_max_row_'):
             # Get the full key after 'change_max_row_'
             key = query.data.split('_')[-1]
-
             if key in self.monitored_shows:
                 await query.edit_message_text(
                     "What is the new maximum row number you want to consider? (Enter a number, or 0 for unlimited)"
                 )
-                context.user_data['waiting_for_max_row'] = True
-                context.user_data['waiting_for_max_row_key'] = key
+                # Store the new state object for changing max row
+                context.user_data['state'] = ChangeMaxRowState(key=key)
             else:
                 await query.edit_message_text("❌ Show not found.")
 
         elif query.data == 'main_menu':
             await query.edit_message_text(
-                "🎭 Welcome to the Theater Seat Finder Bot!\n\n"
+                "🎭 Welcome to the Theater Seat Finder Bot!\n"
                 "Use the buttons below or send a show URL:",
                 reply_markup=self.get_main_menu_keyboard()
             )
+            # Clear state when returning to main menu, set to InitialState
+            context.user_data['state'] = InitialState()
 
     def run(self):
         """Run the bot"""
         application = Application.builder().token(self.token).build()
-
         # Store application reference for monitoring tasks
         self.application = application
 
@@ -937,7 +896,6 @@ class TheaterBot:
 
         main_logger.info("Bot started successfully!")
         application.run_polling()
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Theater Seat Finder Bot')

@@ -21,7 +21,7 @@ DB_FILE = 'theater_bot_db.toml'
 FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"
 LOG_FILE = 'telegram_bot.log'
 DEFAULT_MIN_SEATS = 2
-MONITORING_INTERVAL = 300  # 5 minutes in seconds
+MONITORING_INTERVAL = 30  # 30 seconds
 MAX_GROUPS_TO_NOTIFY = 3
 
 

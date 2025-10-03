@@ -82,13 +82,14 @@ class TheaterBot:
         # Set logging level based on debug flag
         if debug:
             main_logger.setLevel(logging.DEBUG)
-            logging.getLogger("httpx").setLevel(logging.DEBUG)
-            logging.getLogger("telegram").setLevel(logging.DEBUG)
-            logging.getLogger("aiohttp").setLevel(logging.DEBUG)
-        else:
             logging.getLogger("httpx").setLevel(logging.WARNING)
             logging.getLogger("telegram").setLevel(logging.WARNING)
             logging.getLogger("aiohttp").setLevel(logging.WARNING)
+        else:
+            # logging.getLogger("httpx").setLevel(logging.WARNING)
+            # logging.getLogger("telegram").setLevel(logging.WARNING)
+            # logging.getLogger("aiohttp").setLevel(logging.WARNING)
+            ...
     def load_db(self) -> Dict[str, MonitoredShow]:
         """Load monitored shows from TOML database"""
         try:

@@ -6,7 +6,6 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
-
 import aiohttp
 import toml
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
@@ -396,7 +395,25 @@ class TheaterBot:
         text = update.message.text.strip()
         chat_id = update.effective_message.chat_id
 
-        # Handle button commands
+        # --- NEW: Check current state BEFORE processing button commands ---
+        current_state = context.user_data.get('state')
+
+        # If we are in a specific input state (like waiting for max row),
+        # and the user clicks a button command, we should clear the state first
+        # and then process the button command as if the state was InitialState.
+        if isinstance(current_state, (ChangeMaxRowState, MonitorSetupState)):
+            # Check if the input *is* a button command
+            button_commands = [
+                "🔍 Find Available Seats", "➕ Monitor Show",
+                "📋 My Monitored Shows", "❌ Stop Monitoring", "❓ Help"
+            ]
+            if text in button_commands:
+                main_logger.debug(f"User clicked button '{text}' while in state {type(current_state).__name__}. Clearing state and processing button.")
+                context.user_data.pop('state', None) # Clear the specific input state
+                # The code below will now process the button command with InitialState or no state set
+
+
+        # Handle button commands (These are processed *after* potential state clearing)
         if text == "🔍 Find Available Seats":
             await update.message.reply_text(
                 "Please send me the show URL",
@@ -477,7 +494,8 @@ class TheaterBot:
             await update.message.reply_text(help_text, reply_markup=self.get_main_menu_keyboard())
             return
 
-        # --- NEW: Handle states based on the object type ---
+        # --- Handle states based on the object type (After button commands are processed) ---
+        # Refresh the state in case it was cleared by a button command
         current_state = context.user_data.get('state')
 
         # Handle max row setting for specific show (ChangeMaxRowState)

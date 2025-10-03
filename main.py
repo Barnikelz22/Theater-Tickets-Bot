@@ -86,10 +86,9 @@ class TheaterBot:
             logging.getLogger("telegram").setLevel(logging.WARNING)
             logging.getLogger("aiohttp").setLevel(logging.WARNING)
         else:
-            # logging.getLogger("httpx").setLevel(logging.WARNING)
-            # logging.getLogger("telegram").setLevel(logging.WARNING)
-            # logging.getLogger("aiohttp").setLevel(logging.WARNING)
-            ...
+            logging.getLogger("httpx").setLevel(logging.WARNING)
+            logging.getLogger("telegram").setLevel(logging.WARNING)
+            logging.getLogger("aiohttp").setLevel(logging.WARNING)
             
     def load_db(self) -> Dict[str, MonitoredShow]:
         """Load monitored shows from TOML database"""

@@ -1,11 +1,11 @@
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
-import json
 
 import aiohttp
 import toml
@@ -14,14 +14,13 @@ from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
-
 # Constants
 BOT_TOKEN_ENV_VAR = 'BOT_TOKEN'
 DB_FILE = 'theater_bot_db.toml'
 FETCH_URL = "https://t-hazafon.smarticket.co.il/iframe/api/chairmap"
 LOG_FILE = 'telegram_bot.log'
 DEFAULT_MIN_SEATS = 2
-MONITORING_INTERVAL = 30  # 30 seconds
+MONITORING_INTERVAL = 30  # 30 seconds for testing, change back to 300 (5 min) for production
 
 
 # Data classes
@@ -40,6 +39,7 @@ class MonitoredShow:
     created_at: str
     # Store each group as {row, start_chair, end_chair, count}
     last_available_groups: List[Dict]
+    max_row: Optional[int] = None  # Maximum row number to consider
 
 
 # Setup logging
@@ -89,7 +89,8 @@ class TheaterBot:
                         min_seats=value['min_seats'],
                         created_at=value['created_at'],
                         last_available_groups=value.get(
-                            'last_available_groups', [])
+                            'last_available_groups', []),
+                        max_row=value.get('max_row')  # Load max_row if it exists
                     )
                 return shows
         except FileNotFoundError:
@@ -113,7 +114,8 @@ class TheaterBot:
                     'theater_id': show.theater_id,
                     'min_seats': show.min_seats,
                     'created_at': show.created_at,
-                    'last_available_groups': show.last_available_groups
+                    'last_available_groups': show.last_available_groups,
+                    'max_row': show.max_row  # Save max_row
                 }
 
             with open(self.db_file, 'w', encoding='utf-8') as f:
@@ -173,17 +175,26 @@ class TheaterBot:
 
         return seats
 
-    def find_adjacent_seats(self, seats: List[Seat], min_seats: int = DEFAULT_MIN_SEATS) -> List[Dict]:
+    def find_adjacent_seats(self, seats: List[Seat], min_seats: int = DEFAULT_MIN_SEATS, max_row: Optional[int] = None) -> List[Dict]:
         """
         Find groups of adjacent available seats.
 
         Args:
             seats: List of available seats
             min_seats: Minimum number of adjacent seats required in a group
+            max_row: Maximum row number to consider (optional)
 
         Returns:
             List of dictionaries, where each dict contains row, start_chair, end_chair, and count
         """
+        # Filter seats by max_row if provided
+        if max_row is not None:
+            try:
+                seats = [s for s in seats if int(s.row) <= max_row]
+            except ValueError:
+                # If row is not numeric, we can't compare, so skip filtering
+                MAIN_LOGGER.warning(f"Row value is not numeric: {s.row}")
+
         # Group seats by row
         seats_by_row: Dict[str, List[Seat]] = {}
         for seat in seats:
@@ -276,6 +287,7 @@ class TheaterBot:
             "/find - Find available seats\n"
             "/monitor - Monitor a show\n"
             "/myshows - View your monitored shows\n"
+            "/maxrow - Set maximum row number\n"
             "/stop - Stop monitoring shows\n"
             "/help - Show help information"
         )
@@ -296,6 +308,7 @@ class TheaterBot:
             "/find - Find available seats\n"
             "/monitor - Monitor a show\n"
             "/myshows - View your monitored shows\n"
+            "/maxrow - Set maximum row number\n"
             "/stop - Stop monitoring shows\n"
             "/help - Show this help\n\n"
             "Use the buttons at the bottom of your screen for quick access!"
@@ -333,9 +346,18 @@ class TheaterBot:
             for key, show in user_shows.items():
                 message += f"• Show ID: {show.theater_id}\n"
                 message += f"  Min seats: {show.min_seats}\n"
+                message += f"  Max row: {show.max_row if show.max_row is not None else 'Unlimited'}\n"
                 message += f"  Last checked: {len(show.last_available_groups)} groups found\n\n"
 
         await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
+
+    async def maxrow_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /maxrow command"""
+        await update.message.reply_text(
+            "Please enter the maximum row number you would like to receive updates for (or 0 for unlimited):",
+            reply_markup=self.get_main_menu_keyboard()
+        )
+        context.user_data['action'] = 'set_max_row'
 
     async def stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stop command"""
@@ -395,6 +417,7 @@ class TheaterBot:
                 for key, show in user_shows.items():
                     message += f"• Show ID: {show.theater_id}\n"
                     message += f"  Min seats: {show.min_seats}\n"
+                    message += f"  Max row: {show.max_row if show.max_row is not None else 'Unlimited'}\n"
                     message += f"  Last checked: {len(show.last_available_groups)} groups found\n\n"
 
             await update.message.reply_text(message, reply_markup=self.get_main_menu_keyboard())
@@ -433,6 +456,7 @@ class TheaterBot:
                 "/find - Find available seats\n"
                 "/monitor - Monitor a show\n"
                 "/myshows - View your monitored shows\n"
+                "/maxrow - Set maximum row number\n"
                 "/stop - Stop monitoring shows\n"
                 "/help - Show this help\n\n"
                 "Use the buttons at the bottom of your screen for quick access!"
@@ -441,14 +465,42 @@ class TheaterBot:
             await update.message.reply_text(help_text, reply_markup=self.get_main_menu_keyboard())
             return
 
+        # Handle max row setting
+        action = context.user_data.get('action')
+        if action == 'set_max_row':
+            if not text.isdigit():
+                await update.message.reply_text(
+                    "Please enter a valid number (0 for unlimited).",
+                    reply_markup=self.get_main_menu_keyboard()
+                )
+                return
+
+            max_row = int(text)
+            if max_row == 0:
+                max_row = None  # 0 means unlimited
+
+            # Update all shows for this user
+            user_shows = {k: v for k, v in self.monitored_shows.items() if v.chat_id == chat_id}
+            updated_count = 0
+            for key, show in user_shows.items():
+                show.max_row = max_row
+                updated_count += 1
+
+            self.save_db()
+            status = f"unlimited" if max_row is None else str(max_row)
+            await update.message.reply_text(
+                f"✅ Successfully updated max row to {status} for {updated_count} show(s).",
+                reply_markup=self.get_main_menu_keyboard()
+            )
+            context.user_data.pop('action', None)
+            return
+
         # Check if we're waiting for min seats input
         if context.user_data.get('waiting_for_min_seats'):
             await self.handle_min_seats_input(update, context, text)
             return
 
         # Check if we're waiting for a URL
-        action = context.user_data.get('action')
-
         if action == 'find_seats':
             await self.find_seats_for_url(update, context, text)
             context.user_data.pop('action', None)
@@ -482,9 +534,18 @@ class TheaterBot:
                                             reply_markup=self.get_main_menu_keyboard())
             return
 
+        # Get user's max row setting
+        chat_id = update.effective_message.chat_id
+        user_shows = {k: v for k, v in self.monitored_shows.items() if v.chat_id == chat_id}
+        max_row = None
+        if user_shows:
+            # Use max_row from the first show (assuming user has consistent setting)
+            first_show = next(iter(user_shows.values()))
+            max_row = first_show.max_row
+
         # Find adjacent seats with default min of 2
         adjacent_groups = self.find_adjacent_seats(
-            available_seats, min_seats=DEFAULT_MIN_SEATS)
+            available_seats, min_seats=DEFAULT_MIN_SEATS, max_row=max_row)
 
         if adjacent_groups:
             message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n\n"
@@ -535,6 +596,14 @@ class TheaterBot:
             context.user_data.pop('temp_theater_id', None)
             return
 
+        # Get user's max row setting
+        user_shows = {k: v for k, v in self.monitored_shows.items() if v.chat_id == chat_id}
+        max_row = None
+        if user_shows:
+            # Use max_row from the first show (assuming user has consistent setting)
+            first_show = next(iter(user_shows.values()))
+            max_row = first_show.max_row
+
         # Create a unique key for this monitoring
         key = f"{chat_id}_{theater_id}"
 
@@ -545,7 +614,8 @@ class TheaterBot:
             theater_id=theater_id,
             min_seats=min_seats,
             created_at=datetime.now().isoformat(),
-            last_available_groups=[]
+            last_available_groups=[],
+            max_row=max_row
         )
         self.save_db()
 
@@ -581,6 +651,32 @@ class TheaterBot:
             self.monitoring_tasks[key].cancel()
             del self.monitoring_tasks[key]
 
+    def _compare_groups(self, old_groups: List[Dict], new_groups: List[Dict]) -> List[Dict]:
+        """
+        Compare old and new seat groups to find new additions and changes.
+        
+        Args:
+            old_groups: List of previous seat groups
+            new_groups: List of current seat groups
+            
+        Returns:
+            List of groups that are new or have changed
+        """
+        # Create a set of unique identifiers for old groups
+        old_group_keys = set()
+        for group in old_groups:
+            key = (group['row'], group['start_chair'], group['end_chair'])
+            old_group_keys.add(key)
+        
+        # Find new groups that weren't in the old list
+        new_added = []
+        for group in new_groups:
+            key = (group['row'], group['start_chair'], group['end_chair'])
+            if key not in old_group_keys:
+                new_added.append(group)
+        
+        return new_added
+
     async def monitor_show(self, theater_id: str, min_seats: int, chat_id: int, key: str):
         """Monitor a show and notify when seats are available"""
         MAIN_LOGGER.info(
@@ -591,13 +687,14 @@ class TheaterBot:
                 available_seats = await self.fetch_and_parse_chairmap(theater_id)
 
                 if available_seats:
+                    # Use the max_row setting from the monitored show
+                    max_row = self.monitored_shows[key].max_row
                     adjacent_groups = self.find_adjacent_seats(
-                        available_seats, min_seats=min_seats)
+                        available_seats, min_seats=min_seats, max_row=max_row)
 
-                    # Check for changes since last check
+                    # Check for changes since last check using the new comparison method
                     old_groups = self.monitored_shows[key].last_available_groups
-                    new_groups = [
-                        g for g in adjacent_groups if g not in old_groups]
+                    new_groups = self._compare_groups(old_groups, adjacent_groups)
 
                     if new_groups:
                         message = f"🎉 New available seats found for show {theater_id}!\n\n"
@@ -624,7 +721,7 @@ class TheaterBot:
                     self.monitored_shows[key].last_available_groups = adjacent_groups
                     self.save_db()
 
-                # Wait 5 minutes before next check
+                # Wait before next check
                 await asyncio.sleep(MONITORING_INTERVAL)
         except asyncio.CancelledError:
             MAIN_LOGGER.info(
@@ -672,9 +769,18 @@ class TheaterBot:
                 await query.edit_message_text("No available seats found or error occurred.")
                 return
 
+            # Get user's max row setting
+            chat_id = query.from_user.id
+            user_shows = {k: v for k, v in self.monitored_shows.items() if v.chat_id == chat_id}
+            max_row = None
+            if user_shows:
+                # Use max_row from the first show (assuming user has consistent setting)
+                first_show = next(iter(user_shows.values()))
+                max_row = first_show.max_row
+
             # Find adjacent seats with default min of 2
             adjacent_groups = self.find_adjacent_seats(
-                available_seats, min_seats=DEFAULT_MIN_SEATS)
+                available_seats, min_seats=DEFAULT_MIN_SEATS, max_row=max_row)
 
             if adjacent_groups:
                 message = f"Found {len(adjacent_groups)} groups of adjacent seats:\n\n"
@@ -743,6 +849,7 @@ class TheaterBot:
             "monitor", self.monitor_command))
         application.add_handler(CommandHandler(
             "myshows", self.myshows_command))
+        application.add_handler(CommandHandler("maxrow", self.maxrow_command))
         application.add_handler(CommandHandler("stop", self.stop_command))
         application.add_handler(
             CallbackQueryHandler(self.inline_button_handler))
